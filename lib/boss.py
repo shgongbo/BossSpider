@@ -4,9 +4,7 @@ from urllib.parse import quote
 
 import time
 import hashlib
-data = b'Hello, World!'
-hash_object = hashlib.sha1(data)
-hexdigest = hash_object.hexdigest()
+
 import os
 import signal
 import datetime
@@ -68,9 +66,10 @@ class Boss():
                             url_list.append(
                                     f"https://www.zhipin.com/web/geek/job?query={quote(job_name)}&city={city_num}&salary={job_salary}&areaBusiness={first_level_code}:{second_level_code}")
         return url_list
-    def __init__(self,job_name='',job_salary=['405'],city='chengdu',job_experience='0',job_degree='0',
+    def __init__(self,port='12345',job_name='',job_salary=['405'],city='chengdu',job_experience='0',job_degree='0',
         ignore_job=[],ignore_edu=[],ignore_area=[],ignore_salary=[],ignore_job_require=[],
         overlap=False,login_in=False):
+        self.port = port
         self.job_records = []
         self.login_in = login_in
         self.ignore_job = ignore_job
@@ -81,9 +80,12 @@ class Boss():
         self.city = city
         self.query_list = self.generate_query_urls(city,job_name,job_salary)
 
-        file_name = 'output/boss_crawl_output.xlsx'
+        file_name = 'output/boss_crawl_output_%s_%s.xlsx' % (city,job_name)
 
-        if not os.path.exists('output'): os.mkdir('output')
+        try:
+            if not os.path.exists('output'): os.mkdir('output')
+        except:
+            pass
         if overlap:
             counter = 1
             while os.path.exists(file_name):
@@ -98,12 +100,13 @@ class Boss():
         row = ws.max_row
 
         ws.cell(row=row, column=1, value='职位')
-        ws.cell(row=row, column=2, value='工资')
-        ws.cell(row=row, column=3, value='公司名')
-        ws.cell(row=row, column=4, value='位置')
-        ws.cell(row=row, column=5, value='详细内容')
-        ws.cell(row=row, column=6, value='招聘页面')
-        ws.cell(row=row, column=7, value='Boss活跃时间')
+        ws.cell(row=row, column=2, value='工资下限')
+        ws.cell(row=row, column=3, value='工资上限')
+        ws.cell(row=row, column=4, value='公司名')
+        ws.cell(row=row, column=5, value='位置')
+        ws.cell(row=row, column=6, value='Boss活跃时间')
+        ws.cell(row=row, column=7, value='详细内容')
+        ws.cell(row=row, column=8, value='招聘页面')
 
         wb.save(self.file_path)
         wb.close()
@@ -124,7 +127,8 @@ class Boss():
         # search_timeout必需大于或等于0.3
         search_timeout = 0.3
         try:
-            page = ChromiumPage(ChromiumOptions().headless())
+            # page = ChromiumPage(ChromiumOptions().headless())
+            page = ChromiumPage(self.port)
         except Exception as e:
             print(e)
 
@@ -150,7 +154,11 @@ class Boss():
                 # 屏蔽登录窗口
                 try: page.run_js('Object.defineProperties(navigator,{webdriver:{get:()=>false}})')
                 except: pass
+
+                #这里可能会报错，因为可能一个招聘都找不到，此时应该把此链接和子链接都删掉
                 pages_string = page.ele('x://div[@class="options-pages"]').text
+
+
                 if "10" not in pages_string:
                     #这种情况当前已经是足够了，不用细分了.把更细的url都删掉
                     new_list = []
@@ -167,6 +175,7 @@ class Boss():
 
 
                 box = page.ele('x://ul[@class="job-list-box"]').children(timeout=search_timeout)
+                print("本业元素")
                 for card in box:
                     if not page.ele('x://a[@ka="header-username"]', timeout=search_timeout):
                         # 关闭登录窗口
@@ -176,6 +185,9 @@ class Boss():
                     continue_flag = False
                     # 职位
                     job_name = card.ele('x://span[@class="job-name"]',timeout=search_timeout).text
+                    # print("1" *100)
+                    # print(job_name)
+                    # print("2" *100)
                     for each in self.ignore_job:
                         if each in job_name:
                             continue_flag = True
@@ -184,12 +196,20 @@ class Boss():
 
                     # 薪资
                     job_salary = card.ele('x://span[@class="salary"]',timeout=search_timeout).text
-                    job_salary = f'[{job_salary}]'
+                    job_salary = f'{job_salary}'
                     for each in self.ignore_salary:
                         if each in job_salary:
                             continue_flag = True
                             break
                     if continue_flag: continue
+
+                    #对job_salary规范化
+                    if "·" in job_salary:
+                        job_salary = job_salary.split("·")[0]
+                    if "K" not in job_salary:
+                        print("薪资不规范：%s" % job_salary)
+                        continue
+                    [job_salary_min,job_salary_max] = job_salary.replace("K","").split("-")
 
                     # 学历
                     job_tags = ''
@@ -260,13 +280,23 @@ class Boss():
                                     boss_active_time = "未知"
                             except:pass
 
+
+
                             message = f'职位:{job_name},工资:{job_salary},公司名:{job_company},位置:{job_area},详细内容:\n{job_content},Boss活跃时间:{boss_active_time},招聘页面:{job_link}\n'
                             print(message)
 
+                            if boss_active_time in ["未知", "半年前活跃", "近半年活跃", "5月内活跃", "4月内活跃",
+                                                    "3月内活跃", "2月内活跃", "本月活跃"]:
+                                print("招聘信息太久远了,不存储")
+                                tab.close()
+                                continue
+
                             #防止重复存储
-                            hash_object = hashlib.sha1(message)
+                            hash_object = hashlib.sha1(message.encode("utf-8"))
                             hexdigest = hash_object.hexdigest()
                             if hexdigest in self.job_records:
+                                tab.close()
+                                print("重复了")
                                 continue
                             else:
                                 self.job_records.append(hexdigest)
@@ -277,12 +307,13 @@ class Boss():
                                 row = ws.max_row + 1
 
                                 ws.cell(row=row, column=1, value=job_name)
-                                ws.cell(row=row, column=2, value=job_salary)
-                                ws.cell(row=row, column=3, value=job_company)
-                                ws.cell(row=row, column=4, value=job_area)
-                                ws.cell(row=row, column=5, value=job_content)
-                                ws.cell(row=row, column=6, value=job_link)
-                                ws.cell(row=row, column=7, value=boss_active_time)
+                                ws.cell(row=row, column=2, value=job_salary_min)
+                                ws.cell(row=row, column=3, value=job_salary_max)
+                                ws.cell(row=row, column=4, value=job_company)
+                                ws.cell(row=row, column=5, value=job_area)
+                                ws.cell(row=row, column=6, value=boss_active_time)
+                                ws.cell(row=row, column=7, value=job_content)
+                                ws.cell(row=row, column=8, value=job_link)
 
                                 wb.save(self.file_path)
                                 wb.close()
@@ -297,9 +328,17 @@ class Boss():
                 if 'disabled' == next_page.parent().attr('class'):
                     print("Boss直聘 Crawl End")
                     break
-            next_page.click()
-            time.sleep(0.5)
+                next_page.click()
+                time.sleep(0.5)
         except Exception as e:
+            if 'x://div[@class="options-pages"]' in str(e):
+                # 这种情况当前链接和其子链接都没有数据了.把更细的url都删掉
+                new_list = []
+                for url in self.query_list:
+                    if page_url not in url:
+                        new_list.append(url)
+                new_list.sort(key=len)
+                self.query_list = new_list
             print(e)
             print("while circle error")
         page.close()
